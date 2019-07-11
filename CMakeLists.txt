@@ -10,3 +10,8 @@ option(BUILD_TESTING "BUILD_TESTING?" OFF)
 if(BUILD_TESTING)
   add_subdirectory(test)
 endif()
+
+option(BUILD_SAMPLES "BUILD_SAMPLES?" OFF)
+if(BUILD_SAMPLES)
+  add_subdirectory(samples/socks5-proxy)
+endif()
