@@ -606,7 +606,7 @@ void conn::getaddrinfo(const char* hostname) {
   hints.ai_protocol = IPPROTO_TCP;
   CHECK(0
         == c->addrinfo_req.getaddrinfo(c->client->sx->loop, hostname, NULL,
-            &hints, [c](int status, struct addrinfo* ai) {
+            &hints, [c](int status, uw::addrinfo_ptr ai) {
               c->result = status;
 
               if (status == 0) {
@@ -620,7 +620,6 @@ void conn::getaddrinfo(const char* hostname) {
                 }
               }
 
-              uv_freeaddrinfo(ai);
               c->client->do_next();
             }));
   c->timer_reset();

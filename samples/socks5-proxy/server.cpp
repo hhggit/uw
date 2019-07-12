@@ -35,7 +35,7 @@ struct server_state {
   uv_loop_t* loop;
 };
 
-static void do_bind(server_state* state, int status, struct addrinfo* ai);
+static void do_bind(server_state* state, int status, uw::addrinfo_ptr ai);
 
 extern "C" int server_run(const server_config* cf, uv_loop_t* loop) {
   struct addrinfo hints;
@@ -55,7 +55,7 @@ extern "C" int server_run(const server_config* cf, uv_loop_t* loop) {
   hints.ai_protocol = IPPROTO_TCP;
   err = state.getaddrinfo_req.getaddrinfo(loop, cf->bind_host, NULL, &hints,
       [&state](
-          int status, struct addrinfo* ai) { do_bind(&state, status, ai); });
+          int status, uw::addrinfo_ptr ai) { do_bind(&state, status, std::move(ai)); });
   if (err != 0) {
     pr_err("getaddrinfo: %s", uv_strerror(err));
     return err;
@@ -73,7 +73,7 @@ extern "C" int server_run(const server_config* cf, uv_loop_t* loop) {
 }
 
 /* Bind a server to each address that getaddrinfo() reported. */
-static void do_bind(server_state* state, int status, struct addrinfo* addrs) {
+static void do_bind(server_state* state, int status, uw::addrinfo_ptr addrs) {
   char addrbuf[INET6_ADDRSTRLEN + 1];
   unsigned int ipv4_naddrs;
   unsigned int ipv6_naddrs;
@@ -96,13 +96,12 @@ static void do_bind(server_state* state, int status, struct addrinfo* addrs) {
 
   if (status < 0) {
     pr_err("getaddrinfo(\"%s\"): %s", cf->bind_host, uv_strerror(status));
-    uv_freeaddrinfo(addrs);
     return;
   }
 
   ipv4_naddrs = 0;
   ipv6_naddrs = 0;
-  for (ai = addrs; ai != NULL; ai = ai->ai_next) {
+  for (ai = addrs.get(); ai != NULL; ai = ai->ai_next) {
     if (ai->ai_family == AF_INET) {
       ipv4_naddrs += 1;
     } else if (ai->ai_family == AF_INET6) {
@@ -112,14 +111,13 @@ static void do_bind(server_state* state, int status, struct addrinfo* addrs) {
 
   if (ipv4_naddrs == 0 && ipv6_naddrs == 0) {
     pr_err("%s has no IPv4/6 addresses", cf->bind_host);
-    uv_freeaddrinfo(addrs);
     return;
   }
 
   state->servers = new server_ctx[ipv4_naddrs + ipv6_naddrs];
 
   n = 0;
-  for (ai = addrs; ai != NULL; ai = ai->ai_next) {
+  for (ai = addrs.get(); ai != NULL; ai = ai->ai_next) {
     if (ai->ai_family != AF_INET && ai->ai_family != AF_INET6) {
       continue;
     }
@@ -175,8 +173,6 @@ static void do_bind(server_state* state, int status, struct addrinfo* addrs) {
     pr_info("listening on %s:%hu", addrbuf, cf->bind_port);
     n += 1;
   }
-
-  uv_freeaddrinfo(addrs);
 }
 
 int can_auth_none(const server_ctx*, const client_ctx*) { return 1; }
