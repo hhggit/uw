@@ -212,6 +212,8 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
 
   int is_closing() const { return uv_is_closing(raw_handle()); }
 
+  void close() { uv_close(raw_handle(), nullptr); }
+
   template <class F>
   void close(F cb) {
     using tag = detail::tag<0, handle>;
@@ -595,6 +597,10 @@ struct timer : handle<timer, uv_timer_t> {
 };
 
 struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
+  int getaddrinfo(uv_loop_t* loop, const char* node, const char* service,
+      const struct addrinfo* hints) {
+    return uv_getaddrinfo(loop, raw(), nullptr, node, service, hints);
+  }
   template <class F>
   int getaddrinfo(uv_loop_t* loop, const char* node, const char* service,
       const struct addrinfo* hints, F cb) {
@@ -609,6 +615,9 @@ struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
 };
 
 struct getnameinfo_req : req<getnameinfo_req, uv_getnameinfo_t> {
+  int getnameinfo(uv_loop_t* loop, const struct sockaddr* addr, int flags) {
+    return uv_getnameinfo(loop, raw(), nullptr, addr, flags);
+  }
   template <class F>
   int getnameinfo(
       uv_loop_t* loop, const struct sockaddr* addr, int flags, F cb) {
@@ -968,6 +977,104 @@ struct fs_req : req<fs_req, uv_fs_t> {
       auto self = reinterpret_cast<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
+  }
+
+  int close(uv_file file) { return uv_fs_close(nullptr, raw(), file, nullptr); }
+  int open(const char* path, int flags, int mode) {
+    return uv_fs_open(nullptr, raw(), path, flags, mode, nullptr);
+  }
+  int read(
+      uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset) {
+    return uv_fs_read(nullptr, raw(), file, bufs, nbufs, offset, nullptr);
+  }
+  int unlink(const char* path) {
+    return uv_fs_unlink(nullptr, raw(), path, nullptr);
+  }
+  int write(
+      uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset) {
+    return uv_fs_write(nullptr, raw(), file, bufs, nbufs, offset, nullptr);
+  }
+  int copyfile(const char* path, const char* new_path, int flags) {
+    return uv_fs_copyfile(nullptr, raw(), path, new_path, flags, nullptr);
+  }
+  int mkdir(const char* path, int mode) {
+    return uv_fs_mkdir(nullptr, raw(), path, mode, nullptr);
+  }
+  int mkdtemp(const char* tpl) {
+    return uv_fs_mkdtemp(nullptr, raw(), tpl, nullptr);
+  }
+  int rmdir(const char* path) {
+    return uv_fs_rmdir(nullptr, raw(), path, nullptr);
+  }
+  int scandir(const char* path, int flags) {
+    return uv_fs_scandir(nullptr, raw(), path, flags, nullptr);
+  }
+  int opendir(const char* path) {
+    return uv_fs_opendir(nullptr, raw(), path, nullptr);
+  }
+  int readdir(uv_dir_t* dir) {
+    return uv_fs_readdir(nullptr, raw(), dir, nullptr);
+  }
+  int closedir(uv_dir_t* dir) {
+    return uv_fs_closedir(nullptr, raw(), dir, nullptr);
+  }
+  int stat(const char* path) {
+    return uv_fs_stat(nullptr, raw(), path, nullptr);
+  }
+  int fstat(uv_file file) { return uv_fs_fstat(nullptr, raw(), file, nullptr); }
+  int rename(const char* path, const char* new_path) {
+    return uv_fs_rename(nullptr, raw(), path, new_path, nullptr);
+  }
+  int fsync(uv_file file) { return uv_fs_fsync(nullptr, raw(), file, nullptr); }
+  int fdatasync(uv_file file) {
+    return uv_fs_fdatasync(nullptr, raw(), file, nullptr);
+  }
+  int ftruncate(uv_file file, int64_t offset) {
+    return uv_fs_ftruncate(nullptr, raw(), file, offset, nullptr);
+  }
+  int sendfile(
+      uv_file out_fd, uv_file in_fd, int64_t in_offset, size_t length) {
+    return uv_fs_sendfile(
+        nullptr, raw(), out_fd, in_fd, in_offset, length, nullptr);
+  }
+  int access(const char* path, int mode) {
+    return uv_fs_access(nullptr, raw(), path, mode, nullptr);
+  }
+  int chmod(const char* path, int mode) {
+    return uv_fs_chmod(nullptr, raw(), path, mode, nullptr);
+  }
+  int utime(const char* path, double atime, double mtime) {
+    return uv_fs_utime(nullptr, raw(), path, atime, mtime, nullptr);
+  }
+  int futime(uv_file file, double atime, double mtime) {
+    return uv_fs_futime(nullptr, raw(), file, atime, mtime, nullptr);
+  }
+  int lstat(const char* path) {
+    return uv_fs_lstat(nullptr, raw(), path, nullptr);
+  }
+  int link(const char* path, const char* new_path) {
+    return uv_fs_link(nullptr, raw(), path, new_path, nullptr);
+  }
+  int symlink(const char* path, const char* new_path, int flags) {
+    return uv_fs_symlink(nullptr, raw(), path, new_path, flags, nullptr);
+  }
+  int readlink(const char* path) {
+    return uv_fs_readlink(nullptr, raw(), path, nullptr);
+  }
+  int realpath(const char* path) {
+    return uv_fs_realpath(nullptr, raw(), path, nullptr);
+  }
+  int fchmod(uv_file file, int mode) {
+    return uv_fs_fchmod(nullptr, raw(), file, mode, nullptr);
+  }
+  int chown(const char* path, uv_uid_t uid, uv_gid_t gid) {
+    return uv_fs_chown(nullptr, raw(), path, uid, gid, nullptr);
+  }
+  int fchown(uv_file file, uv_uid_t uid, uv_gid_t gid) {
+    return uv_fs_fchown(nullptr, raw(), file, uid, gid, nullptr);
+  }
+  int lchown(const char* path, uv_uid_t uid, uv_gid_t gid) {
+    return uv_fs_lchown(nullptr, raw(), path, uid, gid, nullptr);
   }
 };
 
