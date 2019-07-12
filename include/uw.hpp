@@ -701,10 +701,20 @@ struct timer : handle<timer, uv_timer_t> {
   }
 };
 
+namespace detail {
+struct addrinfo_deleter {
+  constexpr addrinfo_deleter() noexcept = default;
+  void operator()(struct addrinfo* ai) const { uv_freeaddrinfo(ai); }
+};
+} // namespace detail
+using addrinfo_ptr = std::unique_ptr<struct addrinfo, detail::addrinfo_deleter>;
+
 struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
   int getaddrinfo(uv_loop_t* loop, const char* node, const char* service,
-      const struct addrinfo* hints) {
-    return uv_getaddrinfo(loop, raw(), nullptr, node, service, hints);
+      const struct addrinfo* hints, addrinfo_ptr& res) {
+    auto r = uv_getaddrinfo(loop, raw(), nullptr, node, service, hints);
+    res.reset(raw()->addrinfo);
+    return r;
   }
   template <class F>
   int getaddrinfo(uv_loop_t* loop, const char* node, const char* service,
@@ -713,7 +723,7 @@ struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
     return uv_getaddrinfo(loop, raw(),
         [](uv_getaddrinfo_t* h, int status, struct addrinfo* res) {
           auto self = cast_from_uv<getaddrinfo_req*>(h);
-          self->invoke_callback<F>(status, res);
+          self->invoke_callback<F>(status, addrinfo_ptr(res));
         },
         node, service, hints);
   }
