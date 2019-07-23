@@ -8,24 +8,25 @@
 #include <uw.hpp>
 
 int main() {
-    uw::loop loop;
+    uv_loop_t loop;
+    uw::loop l(&loop);
+    l.init();
 
     uw::timer timer;
-    timer.init(loop.raw())
+    timer.init(l.raw());
 
     int i = 0;
-
     timer.start(100, 500, [&]() {
         std::cout << i << std::endl;
         if (++i > 3) {
             timer.stop();
-            timer.close([] {});
+            timer.close();
         }
     });
 
-    loop.run();
+    l.run();
+    l.close();
 
-    loop.close();
     return 0;
 }
 ```
@@ -48,7 +49,7 @@ int main() {
     err = client->connect(&req, &sa, [client](int status) {
         std::cout << "connect " << (status ? uv_strerror(status) : "ok")
                   << std::endl;
-        client->close([] {});
+        client->close();
     });
     if (err) return 1;
 
