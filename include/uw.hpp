@@ -152,17 +152,8 @@ UV cast_to_uv(UW& from) {
 }
 
 struct loop {
-  explicit loop() : loop(new uv_loop_t, false) {
-    if (init() != 0) {
-      delete h_;
-      h_ = nullptr;
-    }
-  }
-  ~loop() {
-    if (!is_default_) delete h_;
-  }
-
-  static loop get_default() { return loop{uv_default_loop(), true}; }
+  explicit loop(uv_loop_t* h) : h_(h) {}
+  static loop get_default() { return loop{uv_default_loop()}; }
 
   uv_loop_t* raw() { return h_; }
   const uv_loop_t* raw() const { return h_; }
@@ -174,6 +165,7 @@ struct loop {
     return p;
   }
 
+  int init() { return uv_loop_init(h_); }
   int close() { return uv_loop_close(h_); }
 
   static size_t size() { return uv_loop_size(); }
@@ -207,13 +199,7 @@ struct loop {
   void set_data(void* data) { return uv_loop_set_data(h_, data); }
 
 private:
-  explicit loop(uv_loop_t* h, bool is_default) noexcept
-      : h_(h), is_default_(is_default) {}
-
-  int init() { return uv_loop_init(h_); }
-
   uv_loop_t* h_;
-  bool is_default_ = false;
 };
 
 namespace detail {
