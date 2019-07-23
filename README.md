@@ -100,7 +100,7 @@ struct callback_holder {
   void invoke_callback(A&&... a) {
     auto& cb = get_cb<Tag>();
     assert(cb);
-    reinterpret_cast<callback<F>&>(*cb).invoke(std::forward<A>(a)...);
+    static_cast<callback<F>&>(*cb).invoke(std::forward<A>(a)...);
   }
 
 private:
@@ -123,20 +123,24 @@ private:
 
 template <class Sub, class Handle>
 struct handle : private Handle, protected detail::callback_holder<Sub> {
-  Handle* raw() { return reinterpret_cast<Handle*>(this); }
-  const Handle* raw() const { return reinterpret_cast<const Handle*>(this); }
+  Handle* raw() { return static_cast<Handle*>(this); }
+  const Handle* raw() const { return static_cast<const Handle*>(this); }
 
-  uv_handle_t* raw_handle() { return (uv_handle_t*)raw(); }
-  const uv_handle_t* raw_handle() const { return (const uv_handle_t*)raw(); }
+  uv_handle_t* raw_handle() { return cast_to_uv<uv_handle_t*>(this); }
+  const uv_handle_t* raw_handle() const {
+    return cast_to_uv<const uv_handle_t*>(this);
+  }
   /*...*/
   int is_closing() const { return uv_is_closing(raw_handle()); }
+
+  void close() { uv_close(raw_handle(), nullptr); }
 
   template <class F>
   void close(F cb) {
     using tag = detail::tag<0, handle>;
     this->template make_callback<F, tag>(std::move(cb));
     uv_close(raw_handle(), [](uv_handle_t* h) {
-      auto self = reinterpret_cast<handle*>((Handle*)h);
+      auto self = cast_from_uv<handle*>(h);
       self->template invoke_callback<F, tag>();
     });
   }
@@ -144,20 +148,20 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
 
 template <class Sub, class Req>
 struct req : private Req, protected detail::callback_holder<Sub> {
-  Req* raw() { return reinterpret_cast<Req*>(this); }
-  const Req* raw() const { return reinterpret_cast<const Req*>(this); }
+  Req* raw() { return static_cast<Req*>(this); }
+  const Req* raw() const { return static_cast<const Req*>(this); }
 
-  uv_req_t* raw_req() { return (uv_req_t*)raw(); }
-  const uv_req_t* raw_req() const { return (const uv_req_t*)raw(); }
+  uv_req_t* raw_req() { return cast_to_uv<uv_req_t*>(this); }
+  const uv_req_t* raw_req() const { return cast_to_uv<const uv_req_t*>(this); }
   /*...*/
   int cancel() { return uv_cancel(raw_req()); }
 };
 
 template <class Sub, class Handle>
 struct stream : handle<Sub, Handle> {
-  uv_stream_t* raw_stream() { return (uv_stream_t*)this->raw(); }
+  uv_stream_t* raw_stream() { return cast_to_uv<uv_stream_t*>(this); }
   const uv_stream_t* raw_stream() const {
-    return (const uv_stream_t*)this->raw();
+    return cast_to_uv<const uv_stream_t*>(this);
   }
 
   int accept(uv_stream_t* client) { return uv_accept(raw_stream(), client); }
@@ -168,7 +172,7 @@ struct stream : handle<Sub, Handle> {
     using tag = detail::tag<1, stream>;
     this->template make_callback<F, tag>(std::move(cb));
     return uv_listen(raw_stream(), backlog, [](uv_stream_t* h, int status) {
-      auto self = reinterpret_cast<stream*>((Handle*)h);
+      auto self = cast_from_uv<stream*>(h);
       self->template invoke_callback<F, tag>(status);
     });
   }
@@ -179,7 +183,7 @@ struct connect_req : req<connect_req, uv_connect_t> {
   int connect(uv_tcp_t* tcp, const struct sockaddr* addr, F cb) {
     this->make_callback(std::move(cb));
     return uv_tcp_connect(raw(), tcp, addr, [](uv_connect_t* h, int status) {
-      auto self = reinterpret_cast<connect_req*>(h);
+      auto self = cast_from_uv<connect_req*>(h);
       self->invoke_callback<F>(status);
     });
   }
