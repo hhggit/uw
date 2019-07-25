@@ -1,8 +1,38 @@
-**UW** is a single-header C++11 wrapper of [libuv](https://github.com/libuv/libuv). 
- 
+**UW** is a single-header C++11 wrapper of [libuv](https://github.com/libuv/libuv).
+
 # Usage
 
-## handle
+`uw::cast_frow_uv/uw::cast_to_uv` can be used cast uw type from/to libuv type.
+And every uw type has a `raw()` method to get the native handle pointer.
+
+## API map
+
+libuv|uw
+------------ | -------------|
+|uv_HANDLE_t|HANDLE|
+|uv_REQ_t|REQ_req|
+|R uv_TYPE_op(uv_TYPE_t*, ...)|R TYPE::op(...)|
+|R uv_TYPE_op(const uv_TYPE_t*, ...)|R TYPE::op(...) const|
+|R uv_TYPE_op(...)|static R TYPE::op(...)|
+|void (* uv_OP_cb)(uv_OP_t*,...)|R (* cb)(...) _or similar callable object_|
+|...|...|
+|uv_loop_t|loop|
+|uv_loop_t* uv_default_loop(void)|static loop loop::get_default()|
+|int uv_loop_init(uv_loop_t* loop)|int loop::init()|
+|int uv_run(uv_loop_t*, uv_run_mode mode)|int loop::run(uv_run_mode mode = UV_RUN_DEFAULT)|
+|...|...|
+|uv_timer_t|timer|
+|void (* uv_timer_cb)(uv_timer_t* handle)|R (* cb)() _or similar callable object_|
+|int uv_timer_start(uv_timer_t* handle, uv_timer_cb cb, uint64_t timeout, uint64_t repeat)|int timer::start(uint64_t timeout, uint64_t repeat, F cb)|
+|uv_connect_t|connect_req|
+|void (* uv_connect_cb)(uv_connect_t* req, int status)|void (* cb)(int status) _or similar callable object_|
+|int uv_tcp_connect(uv_connect_t* req, uv_tcp_t * handle, const struct sockaddr* addr, uv_connect_cb cb)|int connect_req::connect(uv_tcp_t* tcp, const struct sockaddr* addr, F cb)<br/>int tcp::connect(connect_req* req, const struct sockaddr* addr, F cb)|
+|int uv_listen(uv_stream_t* stream, int backlog, uv_connection_cb cb)|int stream<...>::listen(int backlog, F cb)|
+|int uv_fs_close(uv_loop_t* loop, uv_fs_t* req, uv_file file, uv_fs_cb cb)|int fs_req::close(uv_file file)<br/>int fs_req::close(uv_loop_t* loop, uv_file file, F cb)|
+|...|...|
+
+
+## handle example
 ``` cpp
 #include <iostream>
 #include <uw.hpp>
@@ -31,7 +61,7 @@ int main() {
 }
 ```
 
-## request
+## request example
 ``` cpp
 #include <iostream>
 #include <uw.hpp>
