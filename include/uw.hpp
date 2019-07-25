@@ -152,7 +152,11 @@ struct callback_holder {
   void invoke_callback(A&&... a) {
     auto& cb = get_cb<Tag>();
     assert(cb);
-    reinterpret_cast<callback<F>&>(*cb).invoke(std::forward<A>(a)...);
+
+    // user may change cb in F so we must extend lifetime
+    auto temp = std::move(cb);
+    reinterpret_cast<callback<F>&>(*temp).invoke(std::forward<A>(a)...);
+    if (!cb) cb = std::move(temp);
   }
 
 private:
