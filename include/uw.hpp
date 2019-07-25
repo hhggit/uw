@@ -203,12 +203,85 @@ private:
 };
 
 namespace detail {
+struct addrinfo_deleter;
+
+namespace decay_fp_impl {
+// TODO find a generic way to implement this
+// non-captured lambda cann't decay using this template
+// template <class ...A> auto decay(void (*)(A...)) -> void (*)(A...);
+
+#define UW_UNQUOTE(...) __VA_ARGS__
+#define UW_DECAY_DEF(PARAMS)                                                   \
+  auto decay(void (*)(UW_UNQUOTE PARAMS))->void (*)(UW_UNQUOTE PARAMS)
+
+UW_DECAY_DEF(());
+UW_DECAY_DEF((int));
+UW_DECAY_DEF((ssize_t, const uv_buf_t*));
+UW_DECAY_DEF((int, int));
+UW_DECAY_DEF((int64_t, int));
+UW_DECAY_DEF((int, std::unique_ptr<struct addrinfo, detail::addrinfo_deleter>));
+UW_DECAY_DEF((int, const char*, const char*));
+UW_DECAY_DEF((const char*, int, int));
+UW_DECAY_DEF((int, const uv_stat_t*, const uv_stat_t*));
+UW_DECAY_DEF((ssize_t, const uv_buf_t*, const struct sockaddr*, unsigned));
+
+#undef UW_DECAY_DEF
+#undef UW_UNQUOTE
+
+template <class F>
+using decay_fp = decltype(decay_fp_impl::decay(std::declval<F>()));
+
+template <class... T>
+struct void_t_impl {
+  using type = void;
+};
+template <class... T>
+using void_t = typename void_t_impl<T...>::type;
+
+template <class F, class E = void>
+struct decay_fp2 {
+  using type = F;
+};
+
+template <class F>
+struct decay_fp2<F, void_t<decay_fp<F>>> {
+  using type = decay_fp<F>;
+};
+} // namespace decay_fp_impl
+
+// decay non-capatured lambda and function to funtion pointer
+// template <class F>
+// using decay_fp = boost::mp11::mp_eval_or<F, decay_fp_impl::decay_fp, F>;
+template <class F>
+using decay_fp = typename decay_fp_impl::decay_fp2<F>::type;
+
+using deleter_type = void (*)(void*);
+
+template <class F>
+struct pin_callback_impl {
+  static void* ptr(F f) { return new F(std::move(f)); }
+  static deleter_type deleter() {
+    return [](void* p) { delete reinterpret_cast<F*>(p); };
+  }
+};
+
+template <class R, class... A>
+struct pin_callback_impl<R (*)(A...)> {
+  static void* ptr(R (*f)(A...)) { return reinterpret_cast<void*>(f); }
+  static deleter_type deleter() {
+    return [](void*) {};
+  }
+};
+
+// pin callback to a fixed address
+template <class F>
+using pin_callback = pin_callback_impl<decay_fp<F>>;
 
 struct callback {
   template <class F>
   explicit callback(F f)
-      : ptr_(new F(std::move(f))),
-        deleter_([](void* p) { delete reinterpret_cast<F*>(p); }) {}
+      : ptr_(pin_callback<F>::ptr(std::move(f))),
+        deleter_(pin_callback<F>::deleter()) {}
 
   ~callback() {
     assert((bool)ptr_ == (bool)deleter_);
@@ -235,8 +308,8 @@ struct callback {
     return *this;
   }
 
-  void* ptr_              = nullptr;
-  void (*deleter_)(void*) = nullptr;
+  void* ptr_            = nullptr;
+  deleter_type deleter_ = nullptr;
 };
 
 template <size_t N, class Sub>
