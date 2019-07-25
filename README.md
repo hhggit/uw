@@ -95,42 +95,58 @@ int main() {
 ``` cpp
 
 namespace detail {
-struct callback_base {
-  virtual ~callback_base() = default;
-};
 
-template <class F>
-struct callback : callback_base {
-  explicit callback(F f) : f_(std::move(f)) {}
+struct callback {
+  template <class F>
+  explicit callback(F f)
+      : ptr_(new F(std::move(f))),
+        deleter_([](void* p) { delete reinterpret_cast<F*>(p); }) {}
 
-  template <class... A>
-  void invoke(A&&... a) {
-    f_(std::forward<A>(a)...);
+  ~callback() {
+    assert((bool)ptr_ == (bool)deleter_);
+    if (ptr_) deleter_(ptr_);
   }
+  /*...*/
 
-  F f_;
+  void* ptr_              = nullptr;
+  void (*deleter_)(void*) = nullptr;
 };
 
 template <size_t N, class Sub>
 struct tag;
 
-template <class Sub>
+template <bool OneShot = false>
+struct reset_if {
+  static void call(callback& temp, callback& holder) {
+    if (!holder.ptr_) holder = std::move(temp);
+  }
+};
+template <>
+struct reset_if<true> {
+  static void call(callback&, callback&) {}
+};
+
+template <class Sub, bool OneShot = false>
 struct callback_holder {
-  callback_holder() = default;
-
-  callback_holder(const callback_holder&) = delete;
   /*...*/
-
   template <class F, class Tag = tag<0, Sub>>
   void make_callback(F f) {
-    get_cb<Tag>().reset(new callback<F>(std::move(f)));
+    get_cb<Tag>() = callback(std::move(f));
   }
 
-  template <class F, class Tag = tag<0, Sub>, class... A>
+  template <class F, class Tag = tag<0, Sub>,
+      class InvokePolicy = reset_if<OneShot>, class... A>
   void invoke_callback(A&&... a) {
-    auto& cb = get_cb<Tag>();
-    assert(cb);
-    static_cast<callback<F>&>(*cb).invoke(std::forward<A>(a)...);
+    auto& holder = get_cb<Tag>();
+    assert(holder.ptr_);
+
+    // user may change holder in F so we must extend lifetime
+    callback temp(std::move(holder));
+    assert(temp.ptr_ && !holder.ptr_);
+
+    (*reinterpret_cast<F*>(temp.ptr_))(std::forward<A>(a)...);
+
+    InvokePolicy::call(temp, holder);
   }
 
 private:
@@ -140,13 +156,13 @@ private:
   }
 
   template <class Tag>
-  std::unique_ptr<callback_base>& get_cb() {
+  callback& get_cb() {
     static size_t id = next_cb_id();
     if (id >= cb_.size()) cb_.resize(id + 1);
     return cb_[id];
   }
 
-  std::vector<std::unique_ptr<callback_base>> cb_;
+  std::vector<callback> cb_;
 };
 
 } // namespace detail
@@ -177,7 +193,7 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
 };
 
 template <class Sub, class Req>
-struct req : private Req, protected detail::callback_holder<Sub> {
+struct req : private Req, protected detail::callback_holder<Sub, true> {
   Req* raw() { return static_cast<Req*>(this); }
   const Req* raw() const { return static_cast<const Req*>(this); }
 
