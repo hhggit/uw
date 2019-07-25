@@ -236,7 +236,20 @@ struct callback : callback_base {
 template <size_t N, class Sub>
 struct tag;
 
-template <class Sub>
+template <bool OneShot = false>
+struct reset_if {
+  static void call(std::unique_ptr<callback_base>& temp,
+      std::unique_ptr<callback_base>& holder) {
+    if (!holder) holder = std::move(temp);
+  }
+};
+template <>
+struct reset_if<true> {
+  static void call(
+      std::unique_ptr<callback_base>&, std::unique_ptr<callback_base>&) {}
+};
+
+template <class Sub, bool OneShot = false>
 struct callback_holder {
   callback_holder() = default;
 
@@ -251,15 +264,16 @@ struct callback_holder {
     get_cb<Tag>().reset(new callback<F>(std::move(f)));
   }
 
-  template <class F, class Tag = tag<0, Sub>, class... A>
+  template <class F, class Tag = tag<0, Sub>,
+      class InvokePolicy = reset_if<OneShot>, class... A>
   void invoke_callback(A&&... a) {
-    auto& cb = get_cb<Tag>();
-    assert(cb);
+    auto& holder = get_cb<Tag>();
+    assert(holder);
 
-    // user may change cb in F so we must extend lifetime
-    auto temp = std::move(cb);
+    // user may change holder in F so we must extend lifetime
+    auto temp = std::move(holder);
     static_cast<callback<F>&>(*temp).invoke(std::forward<A>(a)...);
-    if (!cb) cb = std::move(temp);
+    InvokePolicy::call(temp, holder);
   }
 
 private:
@@ -331,7 +345,7 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
 };
 
 template <class Sub, class Req>
-struct req : private Req, protected detail::callback_holder<Sub> {
+struct req : private Req, protected detail::callback_holder<Sub, true> {
   Req* raw() { return static_cast<Req*>(this); }
   const Req* raw() const { return static_cast<const Req*>(this); }
 
@@ -1255,7 +1269,7 @@ struct signal : handle<signal, uv_signal_t> {
     return uv_signal_start_oneshot(raw(),
         [](uv_signal_t* h, int signum) {
           auto self = cast_from_uv<signal*>(h);
-          self->invoke_callback<F, tag>(signum);
+          self->invoke_callback<F, tag, detail::reset_if<true>>(signum);
         },
         signum);
   }
