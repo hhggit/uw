@@ -8,16 +8,18 @@
 #ifndef UW_UW_HPP
 #define UW_UW_HPP
 
-#include <uv.h>
-#include <memory>
-#include <vector>
 #include <cassert>
+#include <memory>
+#include <type_traits>
+#include <vector>
+
+#include <uv.h>
 
 namespace uw {
 
 struct loop;
 
-/* Handle types. */
+// Handle types
 template <class, class>
 struct handle;
 template <class, class>
@@ -36,7 +38,7 @@ struct process;
 struct fs_event;
 struct fs_poll;
 
-/* Request types. */
+// Request types
 template <class, class>
 struct req;
 struct getaddrinfo_req;
@@ -47,6 +49,107 @@ struct connect_req;
 struct udp_send_req;
 struct fs_req;
 struct work_req;
+
+namespace detail {
+template <class B, class D>
+struct is_base_of : std::false_type {};
+
+template <class T>
+struct is_base_of<T, T> : std::true_type {};
+
+#define XX(HANDLE, handle)                                                     \
+  template <>                                                                  \
+  struct is_base_of<uv_handle_t, uv_##handle##_t> : std::true_type {};
+UV_HANDLE_TYPE_MAP(XX)
+#undef XX
+
+#define XX(REQ, req)                                                           \
+  template <>                                                                  \
+  struct is_base_of<uv_req_t, uv_##req##_t> : std::true_type {};
+UV_REQ_TYPE_MAP(XX)
+#undef XX
+
+template <>
+struct is_base_of<uv_stream_t, uv_tcp_t> : std::true_type {};
+template <>
+struct is_base_of<uv_stream_t, uv_pipe_t> : std::true_type {};
+template <>
+struct is_base_of<uv_stream_t, uv_tty_t> : std::true_type {};
+
+template <class T, class U>
+struct has_same_cvrp
+    : std::integral_constant<bool,
+          std::is_const<T>::value == std::is_const<U>::value
+              && std::is_volatile<T>::value == std::is_volatile<U>::value
+              && std::is_lvalue_reference<T>::value
+                     == std::is_lvalue_reference<U>::value
+              && std::is_rvalue_reference<T>::value
+                     == std::is_rvalue_reference<U>::value
+              && std::is_pointer<T>::value == std::is_pointer<U>::value> {};
+
+template <class T>
+using remove_cvrp_t = typename std::remove_cv<typename std::remove_reference<
+    typename std::remove_pointer<T>::type>::type>::type;
+
+template <class T, class U>
+struct apply_cvrp {
+  using type = U;
+};
+
+template <class T, class U>
+using apply_cvrp_t = typename apply_cvrp<T, U>::type;
+
+template <class T, class U>
+struct apply_cvrp<T*, U> : std::add_pointer<apply_cvrp_t<T, U>> {};
+template <class T, class U>
+struct apply_cvrp<T&, U> : std::add_lvalue_reference<apply_cvrp_t<T, U>> {};
+template <class T, class U>
+struct apply_cvrp<T&&, U> : std::add_rvalue_reference<apply_cvrp_t<T, U>> {};
+template <class T, class U>
+struct apply_cvrp<const T, U> : std::add_const<apply_cvrp_t<T, U>> {};
+template <class T, class U>
+struct apply_cvrp<volatile T, U> : std::add_volatile<apply_cvrp_t<T, U>> {};
+template <class T, class U>
+struct apply_cvrp<const volatile T, U> : std::add_cv<apply_cvrp_t<T, U>> {};
+
+template <class T, class U>
+T safe_cast(U h) {
+  static_assert(has_same_cvrp<T, U>::value, "");
+  using t = remove_cvrp_t<T>;
+  using u = remove_cvrp_t<U>;
+  static_assert(is_base_of<t, u>::value, "");
+  return reinterpret_cast<T>(h);
+}
+
+template <class T, class U>
+T unsafe_cast(U h) {
+  static_assert(has_same_cvrp<T, U>::value, "");
+  using t = remove_cvrp_t<T>;
+  using u = remove_cvrp_t<U>;
+  static_assert(is_base_of<t, u>::value || is_base_of<u, t>::value, "");
+  return reinterpret_cast<T>(h);
+}
+
+}; // namespace detail
+
+template <class UW, class UV>
+UW cast_from_uv(UV from) {
+  using raw_type = typename std::remove_pointer<decltype(
+      std::declval<detail::remove_cvrp_t<UW>>().raw())>::type;
+  // static_cast<UW*>(raw_type*) WON'T work if raw_type is a private base of UW.
+  // we can use reinterpret_cast ONLY IF raw_type is first base of UW.
+  return reinterpret_cast<UW>(
+      detail::unsafe_cast<detail::apply_cvrp_t<UW, raw_type>>(from));
+}
+
+template <class UV, class UW>
+UV cast_to_uv(UW* from) {
+  return detail::safe_cast<UV>(from->raw());
+}
+template <class UV, class UW>
+UV cast_to_uv(UW& from) {
+  return detail::safe_cast<UV>(*from.raw());
+}
 
 struct loop {
   explicit loop() : loop(new uv_loop_t, false) {
@@ -155,7 +258,7 @@ struct callback_holder {
 
     // user may change cb in F so we must extend lifetime
     auto temp = std::move(cb);
-    reinterpret_cast<callback<F>&>(*temp).invoke(std::forward<A>(a)...);
+    static_cast<callback<F>&>(*temp).invoke(std::forward<A>(a)...);
     if (!cb) cb = std::move(temp);
   }
 
@@ -179,11 +282,13 @@ private:
 
 template <class Sub, class Handle>
 struct handle : private Handle, protected detail::callback_holder<Sub> {
-  Handle* raw() { return reinterpret_cast<Handle*>(this); }
-  const Handle* raw() const { return reinterpret_cast<const Handle*>(this); }
+  Handle* raw() { return static_cast<Handle*>(this); }
+  const Handle* raw() const { return static_cast<const Handle*>(this); }
 
-  uv_handle_t* raw_handle() { return (uv_handle_t*)raw(); }
-  const uv_handle_t* raw_handle() const { return (const uv_handle_t*)raw(); }
+  uv_handle_t* raw_handle() { return cast_to_uv<uv_handle_t*>(this); }
+  const uv_handle_t* raw_handle() const {
+    return cast_to_uv<const uv_handle_t*>(this);
+  }
 
   void ref() { return uv_ref(raw_handle()); }
   void unref() { return uv_unref(raw_handle()); }
@@ -219,7 +324,7 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
     using tag = detail::tag<0, handle>;
     this->template make_callback<F, tag>(std::move(cb));
     uv_close(raw_handle(), [](uv_handle_t* h) {
-      auto self = reinterpret_cast<handle*>((Handle*)h);
+      auto self = cast_from_uv<handle*>(h);
       self->template invoke_callback<F, tag>();
     });
   }
@@ -227,11 +332,11 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
 
 template <class Sub, class Req>
 struct req : private Req, protected detail::callback_holder<Sub> {
-  Req* raw() { return reinterpret_cast<Req*>(this); }
-  const Req* raw() const { return reinterpret_cast<const Req*>(this); }
+  Req* raw() { return static_cast<Req*>(this); }
+  const Req* raw() const { return static_cast<const Req*>(this); }
 
-  uv_req_t* raw_req() { return (uv_req_t*)raw(); }
-  const uv_req_t* raw_req() const { return (const uv_req_t*)raw(); }
+  uv_req_t* raw_req() { return cast_to_uv<uv_req_t*>(this); }
+  const uv_req_t* raw_req() const { return cast_to_uv<const uv_req_t*>(this); }
 
   static size_t size(uv_req_type t) { return uv_req_size(t); }
   void* get_data() const { return uv_req_get_data(raw_req()); }
@@ -248,7 +353,7 @@ struct shutdown_req : req<shutdown_req, uv_shutdown_t> {
   int shutdown(uv_stream_t* stream, F cb) {
     this->make_callback(std::move(cb));
     return uv_shutdown(raw(), stream, [](uv_shutdown_t* h, int status) {
-      auto self = reinterpret_cast<shutdown_req*>(h);
+      auto self = cast_from_uv<shutdown_req*>(h);
       self->invoke_callback<F>(status);
     });
   }
@@ -260,7 +365,7 @@ struct write_req : req<write_req, uv_write_t> {
       uv_stream_t* stream, const uv_buf_t bufs[], unsigned int nbufs, F cb) {
     this->make_callback(std::move(cb));
     return uv_write(raw(), stream, bufs, nbufs, [](uv_write_t* h, int status) {
-      auto self = reinterpret_cast<write_req*>(h);
+      auto self = cast_from_uv<write_req*>(h);
       self->invoke_callback<F>(status);
     });
   }
@@ -271,7 +376,7 @@ struct write_req : req<write_req, uv_write_t> {
     this->make_callback<F, tag>(std::move(cb));
     return uv_write2(
         raw(), stream, bufs, nbufs, send_handle, [](uv_write_t* h, int status) {
-          auto self = reinterpret_cast<write_req*>(h);
+          auto self = cast_from_uv<write_req*>(h);
           self->invoke_callback<F, tag>(status);
         });
   }
@@ -279,9 +384,9 @@ struct write_req : req<write_req, uv_write_t> {
 
 template <class Sub, class Handle>
 struct stream : handle<Sub, Handle> {
-  uv_stream_t* raw_stream() { return (uv_stream_t*)this->raw(); }
+  uv_stream_t* raw_stream() { return cast_to_uv<uv_stream_t*>(this); }
   const uv_stream_t* raw_stream() const {
-    return (const uv_stream_t*)this->raw();
+    return cast_to_uv<const uv_stream_t*>(this);
   }
 
   size_t get_write_queue_size() const {
@@ -308,7 +413,7 @@ struct stream : handle<Sub, Handle> {
     using tag = detail::tag<1, stream>;
     this->template make_callback<F, tag>(std::move(cb));
     return uv_listen(raw_stream(), backlog, [](uv_stream_t* h, int status) {
-      auto self = reinterpret_cast<stream*>((Handle*)h);
+      auto self = cast_from_uv<stream*>(h);
       self->template invoke_callback<F, tag>(status);
     });
   }
@@ -319,7 +424,7 @@ struct stream : handle<Sub, Handle> {
     this->template make_callback<F, tag>(std::move(read_cb));
     return uv_read_start(raw_stream(), alloc_cb,
         [](uv_stream_t* h, ssize_t n, const uv_buf_t* b) {
-          auto self = reinterpret_cast<stream*>((Handle*)h);
+          auto self = cast_from_uv<stream*>(h);
           self->template invoke_callback<F, tag>(n, b);
         });
   }
@@ -346,7 +451,7 @@ struct connect_req : req<connect_req, uv_connect_t> {
   int connect(uv_tcp_t* tcp, const struct sockaddr* addr, F cb) {
     this->make_callback(std::move(cb));
     return uv_tcp_connect(raw(), tcp, addr, [](uv_connect_t* h, int status) {
-      auto self = reinterpret_cast<connect_req*>(h);
+      auto self = cast_from_uv<connect_req*>(h);
       self->invoke_callback<F>(status);
     });
   }
@@ -356,7 +461,7 @@ struct connect_req : req<connect_req, uv_connect_t> {
     using tag = detail::tag<1, connect_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_pipe_connect(raw(), pipe, name, [](uv_connect_t* h, int status) {
-      auto self = reinterpret_cast<connect_req*>(h);
+      auto self = cast_from_uv<connect_req*>(h);
       self->invoke_callback<F, tag>(status);
     });
   }
@@ -401,7 +506,7 @@ struct udp_send_req : req<udp_send_req, uv_udp_send_t> {
     this->make_callback(std::move(cb));
     return uv_udp_send(
         raw(), udp, bufs, nbufs, addr, [](uv_udp_send_t* h, int status) {
-          auto self = reinterpret_cast<udp_send_req*>(h);
+          auto self = cast_from_uv<udp_send_req*>(h);
           self->invoke_callback<F>(status);
         });
   }
@@ -466,7 +571,7 @@ struct udp : handle<udp, uv_udp_t> {
     return uv_udp_recv_start(raw(), alloc_cb,
         [](uv_udp_t* h, ssize_t nread, const uv_buf_t* buf,
             const struct sockaddr* addr, unsigned flags) {
-          auto self = reinterpret_cast<udp*>(h);
+          auto self = cast_from_uv<udp*>(h);
           self->invoke_callback<F>(nread, buf, addr, flags);
         });
   }
@@ -516,7 +621,7 @@ struct poll : handle<poll, uv_poll_t> {
     this->make_callback(std::move(cb));
     return uv_poll_start(
         raw(), events, [](uv_poll_t* h, int status, int events) {
-          auto self = reinterpret_cast<poll*>(h);
+          auto self = cast_from_uv<poll*>(h);
           self->invoke_callback<F>(status, events);
         });
   }
@@ -530,7 +635,7 @@ struct prepare : handle<prepare, uv_prepare_t> {
   int start(F cb) {
     this->make_callback(std::move(cb));
     return uv_prepare_start(raw(), [](uv_prepare_t* h) {
-      auto self = reinterpret_cast<prepare*>(h);
+      auto self = cast_from_uv<prepare*>(h);
       self->invoke_callback<F>();
     });
   }
@@ -544,7 +649,7 @@ struct check : handle<check, uv_check_t> {
   int start(F cb) {
     this->make_callback(std::move(cb));
     return uv_check_start(raw(), [](uv_check_t* h) {
-      auto self = reinterpret_cast<check*>(h);
+      auto self = cast_from_uv<check*>(h);
       self->invoke_callback<F>();
     });
   }
@@ -558,7 +663,7 @@ struct idle : handle<idle, uv_idle_t> {
   int start(F cb) {
     this->make_callback(std::move(cb));
     return uv_idle_start(raw(), [](uv_idle_t* h) {
-      auto self = reinterpret_cast<idle*>(h);
+      auto self = cast_from_uv<idle*>(h);
       self->invoke_callback<F>();
     });
   }
@@ -571,7 +676,7 @@ struct async : handle<async, uv_async_t> {
   int init(uv_loop_t* loop, F cb) {
     this->make_callback(std::move(cb));
     return uv_async_init(loop, raw(), [](uv_async_t* h) {
-      auto self = reinterpret_cast<async*>(h);
+      auto self = cast_from_uv<async*>(h);
       self->invoke_callback<F>();
     });
   }
@@ -589,7 +694,7 @@ struct timer : handle<timer, uv_timer_t> {
     this->make_callback(std::move(cb));
     return uv_timer_start(raw(),
         [](uv_timer_t* h) {
-          auto self = reinterpret_cast<timer*>(h);
+          auto self = cast_from_uv<timer*>(h);
           self->invoke_callback<F>();
         },
         timeout, repeat);
@@ -607,7 +712,7 @@ struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
     this->make_callback(std::move(cb));
     return uv_getaddrinfo(loop, raw(),
         [](uv_getaddrinfo_t* h, int status, struct addrinfo* res) {
-          auto self = reinterpret_cast<getaddrinfo_req*>(h);
+          auto self = cast_from_uv<getaddrinfo_req*>(h);
           self->invoke_callback<F>(status, res);
         },
         node, service, hints);
@@ -625,7 +730,7 @@ struct getnameinfo_req : req<getnameinfo_req, uv_getnameinfo_t> {
     return uv_getnameinfo(loop, raw(),
         [](uv_getnameinfo_t* h, int status, const char* hostname,
             const char* service) {
-          auto self = reinterpret_cast<getnameinfo_req*>(h);
+          auto self = cast_from_uv<getnameinfo_req*>(h);
           self->invoke_callback<F>(status, hostname, service);
         },
         addr, flags);
@@ -651,11 +756,11 @@ struct work_req : req<work_req, uv_work_t> {
     this->make_callback<F2, tag2>(std::move(after_work_cb));
     return uv_queue_work(loop, raw(),
         [](uv_work_t* h) {
-          auto self = reinterpret_cast<work_req*>(h);
+          auto self = cast_from_uv<work_req*>(h);
           self->invoke_callback<F>();
         },
         [](uv_work_t* h, int status) {
-          auto self = reinterpret_cast<work_req*>(h);
+          auto self = cast_from_uv<work_req*>(h);
           self->invoke_callback<F2, tag2>(status);
         });
   }
@@ -674,7 +779,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_CLOSE, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_close(loop, raw(), [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -683,7 +788,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_OPEN, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_open(loop, raw(), path, flags, mode, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -693,7 +798,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_READ, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_read(loop, raw(), file, bufs, nbufs, offset, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -702,7 +807,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_UNLINK, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_unlink(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -712,7 +817,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_WRITE, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_write(loop, raw(), file, bufs, nbufs, offset, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -723,7 +828,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_COPYFILE, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_copyfile(loop, raw(), path, new_path, flags, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -732,7 +837,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_MKDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_mkdir(loop, raw(), path, mode, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -741,7 +846,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_MKDTEMP, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_mkdtemp(loop, raw(), tpl, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -750,7 +855,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_RMDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_rmdir(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -759,7 +864,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_SCANDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_scandir(loop, raw(), path, flags, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -769,7 +874,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_OPENDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_opendir(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -778,7 +883,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_READDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_readdir(loop, raw(), dir, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -787,7 +892,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_CLOSEDIR, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_closedir(loop, raw(), dir, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -796,7 +901,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_STAT, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_stat(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -805,7 +910,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FSTAT, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_fstat(loop, raw(), file, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -814,7 +919,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_RENAME, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_rename(loop, raw(), path, new_path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -823,7 +928,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FSYNC, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_fsync(loop, raw(), file, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -832,7 +937,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FDATASYNC, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_fdatasync(loop, raw(), file, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -841,7 +946,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FTRUNCATE, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_ftruncate(loop, raw(), file, offset, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -852,7 +957,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_sendfile(
         loop, raw(), out_fd, in_fd, in_offset, length, [](uv_fs_t* h) {
-          auto self = reinterpret_cast<fs_req*>(h);
+          auto self = cast_from_uv<fs_req*>(h);
           self->invoke_callback<F, tag>();
         });
   }
@@ -861,7 +966,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_ACCESS, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_access(loop, raw(), path, mode, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -870,7 +975,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_CHMOD, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_template(loop, raw(), path, mode, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -880,7 +985,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_UTIME, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_utime(loop, raw(), path, atime, mtime, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -889,7 +994,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FUTIME, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_futime(loop, raw(), file, atime, mtime, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -898,7 +1003,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_LSTAT, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_lstat(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -907,7 +1012,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_LINK, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_link(loop, raw(), path, new_path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -918,7 +1023,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_SYMLINK, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_symlink(loop, raw(), path, new_path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -927,7 +1032,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_READLINK, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_readlink(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -936,7 +1041,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_REALPATH, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_realpath(loop, raw(), path, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -945,7 +1050,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FCHMOD, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_fchmod(loop, raw(), file, mode, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -955,7 +1060,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_CHOWN, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_chown(loop, raw(), path, uid, gid, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -964,7 +1069,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_FCHOWN, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_fchown(loop, raw(), file, uid, gid, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -974,7 +1079,7 @@ struct fs_req : req<fs_req, uv_fs_t> {
     using tag = detail::tag<UV_FS_LCHOWN, fs_req>;
     this->make_callback<F, tag>(std::move(cb));
     return uv_fs_lchown(loop, raw(), path, uid, gid, [](uv_fs_t* h) {
-      auto self = reinterpret_cast<fs_req*>(h);
+      auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
@@ -1091,7 +1196,7 @@ struct fs_poll : handle<fs_poll, uv_fs_poll_t> {
     return uv_fs_poll_start(raw(),
         [](uv_fs_poll_t* h, int status, const uv_stat_t* prev,
             const uv_stat_t* curr) {
-          auto self = reinterpret_cast<fs_poll*>(h);
+          auto self = cast_from_uv<fs_poll*>(h);
           self->invoke_callback<F>(status, prev, curr);
         },
         path, interval);
@@ -1111,7 +1216,7 @@ struct fs_event : handle<fs_event, uv_fs_event_t> {
     return uv_fs_event_start(raw(),
         [](uv_fs_event_t* h, int status, const uv_stat_t* prev,
             const uv_stat_t* curr) {
-          auto self = reinterpret_cast<fs_event*>(h);
+          auto self = cast_from_uv<fs_event*>(h);
           self->invoke_callback<F>(status, prev, curr);
         },
         path, flags);
@@ -1127,7 +1232,7 @@ struct signal : handle<signal, uv_signal_t> {
     this->make_callback(std::move(cb));
     return uv_signal_start(raw(),
         [](uv_signal_t* h, int signum) {
-          auto self = reinterpret_cast<signal*>(h);
+          auto self = cast_from_uv<signal*>(h);
           self->invoke_callback<F>(signum);
         },
         signum);
@@ -1139,7 +1244,7 @@ struct signal : handle<signal, uv_signal_t> {
     this->make_callback<F, tag>(std::move(cb));
     return uv_signal_start_oneshot(raw(),
         [](uv_signal_t* h, int signum) {
-          auto self = reinterpret_cast<signal*>(h);
+          auto self = cast_from_uv<signal*>(h);
           self->invoke_callback<F, tag>(signum);
         },
         signum);
