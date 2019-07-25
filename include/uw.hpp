@@ -203,20 +203,40 @@ private:
 };
 
 namespace detail {
-struct callback_base {
-  virtual ~callback_base() = default;
-};
 
-template <class F>
-struct callback : callback_base {
-  explicit callback(F f) : f_(std::move(f)) {}
+struct callback {
+  template <class F>
+  explicit callback(F f)
+      : ptr_(new F(std::move(f))),
+        deleter_([](void* p) { delete reinterpret_cast<F*>(p); }) {}
 
-  template <class... A>
-  void invoke(A&&... a) {
-    f_(std::forward<A>(a)...);
+  ~callback() {
+    assert((bool)ptr_ == (bool)deleter_);
+    if (ptr_) deleter_(ptr_);
   }
 
-  F f_;
+  callback()                = default;
+  callback(const callback&) = delete;
+  callback& operator=(const callback&) = delete;
+  callback(callback&& other) noexcept {
+    ptr_           = other.ptr_;
+    deleter_       = other.deleter_;
+    other.deleter_ = nullptr;
+    other.ptr_     = nullptr;
+  }
+  callback& operator=(callback&& other) noexcept {
+    assert(&other != this);
+    assert((bool)ptr_ == (bool)deleter_);
+    if (ptr_) deleter_(ptr_);
+    ptr_           = other.ptr_;
+    deleter_       = other.deleter_;
+    other.deleter_ = nullptr;
+    other.ptr_     = nullptr;
+    return *this;
+  }
+
+  void* ptr_              = nullptr;
+  void (*deleter_)(void*) = nullptr;
 };
 
 template <size_t N, class Sub>
@@ -224,15 +244,13 @@ struct tag;
 
 template <bool OneShot = false>
 struct reset_if {
-  static void call(std::unique_ptr<callback_base>& temp,
-      std::unique_ptr<callback_base>& holder) {
-    if (!holder) holder = std::move(temp);
+  static void call(callback& temp, callback& holder) {
+    if (!holder.ptr_) holder = std::move(temp);
   }
 };
 template <>
 struct reset_if<true> {
-  static void call(
-      std::unique_ptr<callback_base>&, std::unique_ptr<callback_base>&) {}
+  static void call(callback&, callback&) {}
 };
 
 template <class Sub, bool OneShot = false>
@@ -247,18 +265,21 @@ struct callback_holder {
 
   template <class F, class Tag = tag<0, Sub>>
   void make_callback(F f) {
-    get_cb<Tag>().reset(new callback<F>(std::move(f)));
+    get_cb<Tag>() = callback(std::move(f));
   }
 
   template <class F, class Tag = tag<0, Sub>,
       class InvokePolicy = reset_if<OneShot>, class... A>
   void invoke_callback(A&&... a) {
     auto& holder = get_cb<Tag>();
-    assert(holder);
+    assert(holder.ptr_);
 
     // user may change holder in F so we must extend lifetime
-    auto temp = std::move(holder);
-    static_cast<callback<F>&>(*temp).invoke(std::forward<A>(a)...);
+    callback temp(std::move(holder));
+    assert(temp.ptr_ && !holder.ptr_);
+
+    (*reinterpret_cast<F*>(temp.ptr_))(std::forward<A>(a)...);
+
     InvokePolicy::call(temp, holder);
   }
 
@@ -269,13 +290,13 @@ private:
   }
 
   template <class Tag>
-  std::unique_ptr<callback_base>& get_cb() {
+  callback& get_cb() {
     static size_t id = next_cb_id();
     if (id >= cb_.size()) cb_.resize(id + 1);
     return cb_[id];
   }
 
-  std::vector<std::unique_ptr<callback_base>> cb_;
+  std::vector<callback> cb_;
 };
 
 } // namespace detail
