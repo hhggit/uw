@@ -15,6 +15,11 @@
 
 #include <uv.h>
 
+#ifdef UW_USE_BOOST
+#include <boost/callable_traits/function_type.hpp>
+#include <boost/mp11/utility.hpp>
+#endif
+
 namespace uw {
 
 struct loop;
@@ -206,9 +211,19 @@ namespace detail {
 struct addrinfo_deleter;
 
 namespace decay_fp_impl {
-// TODO find a generic way to implement this
-// non-captured lambda cann't decay using this template
-// template <class ...A> auto decay(void (*)(A...)) -> void (*)(A...);
+
+#ifdef UW_USE_BOOST
+
+template <class F>
+using to_fp_t =
+typename std::add_pointer<boost::callable_traits::function_type_t<F>>::type;
+
+template <class F>
+using decay_fp =
+typename std::enable_if<std::is_convertible<F, to_fp_t<F>>::value,
+                        to_fp_t<F>>::type;
+
+#else // UW_USE_BOOST
 
 #define UW_UNQUOTE(...) __VA_ARGS__
 #define UW_DECAY_DEF(PARAMS)                                                   \
@@ -247,13 +262,18 @@ template <class F>
 struct decay_fp2<F, void_t<decay_fp<F>>> {
   using type = decay_fp<F>;
 };
+
+#endif // UW_USE_BOOST
 } // namespace decay_fp_impl
 
-// decay non-capatured lambda and function to funtion pointer
-// template <class F>
-// using decay_fp = boost::mp11::mp_eval_or<F, decay_fp_impl::decay_fp, F>;
+// decay non-captured lambda and function to function pointer
+#ifdef UW_USE_BOOST
+template <class F>
+using decay_fp = boost::mp11::mp_eval_or<F, decay_fp_impl::decay_fp, F>;
+#else
 template <class F>
 using decay_fp = typename decay_fp_impl::decay_fp2<F>::type;
+#endif
 
 using deleter_type = void (*)(void*);
 
