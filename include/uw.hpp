@@ -532,11 +532,18 @@ struct stream : handle<Sub, Handle> {
     });
   }
 
-  template <class F>
-  int read_start(uv_alloc_cb alloc_cb, F read_cb) {
+  template <class A, class F>
+  int read_start(A alloc_cb, F read_cb) {
     using tag = detail::tag<0, stream>;
     this->template make_callback<F, tag>(std::move(read_cb));
-    return uv_read_start(raw_stream(), alloc_cb,
+    using alloc_tag = detail::tag<2, stream>;
+    this->template make_callback<A, alloc_tag>(std::move(alloc_cb));
+    return uv_read_start(
+        raw_stream(),
+        [](uv_handle_t* h, size_t suggested_size, uv_buf_t* b) {
+          auto self = cast_from_uv<stream*>(h);
+          self->template invoke_callback<A, alloc_tag>(suggested_size, b);
+        },
         [](uv_stream_t* h, ssize_t n, const uv_buf_t* b) {
           auto self = cast_from_uv<stream*>(h);
           self->template invoke_callback<F, tag>(n, b);
