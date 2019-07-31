@@ -583,10 +583,10 @@ struct connect_req : req<connect_req, uv_connect_t> {
 
 struct tcp : stream<tcp, uv_tcp_t> {
   int init(uv_loop_t* loop) { return uv_tcp_init(loop, raw()); }
-  int init(uv_loop_t* loop, int flags) {
+  int init(uv_loop_t* loop, unsigned int flags) {
     return uv_tcp_init_ex(loop, raw(), flags);
   }
-  int init_ex(uv_loop_t* loop, int flags) {
+  int init_ex(uv_loop_t* loop, unsigned int flags) {
     return uv_tcp_init_ex(loop, raw(), flags);
   }
   int open(uv_os_sock_t sock) { return uv_tcp_open(raw(), sock); }
@@ -628,10 +628,10 @@ struct udp_send_req : req<udp_send_req, uv_udp_send_t> {
 
 struct udp : handle<udp, uv_udp_t> {
   int init(uv_loop_t* loop) { return uv_udp_init(loop, raw()); }
-  int init(uv_loop_t* loop, int flags) {
+  int init(uv_loop_t* loop, unsigned int flags) {
     return uv_udp_init_ex(loop, raw(), flags);
   }
-  int init_ex(uv_loop_t* loop, int flags) {
+  int init_ex(uv_loop_t* loop, unsigned int flags) {
     return uv_udp_init_ex(loop, raw(), flags);
   }
   int open(uv_os_sock_t sock) { return uv_udp_open(raw(), sock); }
