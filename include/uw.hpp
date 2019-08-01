@@ -373,7 +373,7 @@ struct callback_holder {
 
     (*reinterpret_cast<F*>(temp.ptr_))(std::forward<A>(a)...);
 
-    InvokePolicy::call(temp, holder);
+    InvokePolicy::call(temp, get_cb<Tag>());
   }
 
 private:
