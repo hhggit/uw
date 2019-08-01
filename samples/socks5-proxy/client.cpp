@@ -130,7 +130,6 @@ struct client_ctx {
 };
 
 static int conn_cycle(const char* who, conn* a, conn* b);
-static void conn_alloc(uv_handle_t* handle, size_t size, uv_buf_t* buf);
 
 client_ctx* client_new(server_ctx* sx) {
   auto cx = new client_ctx();
@@ -642,29 +641,24 @@ int conn::connect() {
 
 void conn::read() {
   auto c = this;
-  CHECK(
-      0
-      == c->tcp.read_start(conn_alloc, [c](ssize_t nread, const uv_buf_t* buf) {
-           ASSERT(c->t.buf == buf->base);
-           ASSERT(c->rdstate == c_busy);
-           c->rdstate = c_done;
-           c->result  = nread;
+  CHECK(0
+        == c->tcp.read_start(
+            [c](size_t, uv_buf_t* buf) {
+              buf->base = c->t.buf;
+              buf->len  = sizeof(c->t.buf);
+            },
+            [c](ssize_t nread, const uv_buf_t* buf) {
+              ASSERT(c->t.buf == buf->base);
+              ASSERT(c->rdstate == c_busy);
+              c->rdstate = c_done;
+              c->result  = nread;
 
-           c->tcp.read_stop();
-           c->client->do_next();
-         }));
+              c->tcp.read_stop();
+              c->client->do_next();
+            }));
   ASSERT(c->rdstate == c_stop);
   c->rdstate = c_busy;
   c->timer_reset();
-}
-
-static void conn_alloc(uv_handle_t* handle, size_t size, uv_buf_t* buf) {
-  (void)size;
-  auto h  = uw::cast_from_uv<uw::tcp*>(handle);
-  conn* c = CONTAINER_OF(h, conn, tcp);
-  ASSERT(c->rdstate == c_busy);
-  buf->base = c->t.buf;
-  buf->len  = sizeof(c->t.buf);
 }
 
 void conn::write(const void* data, unsigned int len) {
