@@ -202,9 +202,10 @@ void client_ctx::do_next() {
       memset(&cx->parser, -1, sizeof(cx->parser));
       memset(&cx->state, -1, sizeof(cx->state));
       memset(&cx->sx, -1, sizeof(cx->sx));
-      // TODO
     }
-    delete cx;
+    // TODO : HACK, we should delete client in other place.
+    static std::unique_ptr<client_ctx> defer_delete;
+    defer_delete.reset(cx);
   }
 }
 
@@ -541,7 +542,9 @@ int client_ctx::do_kill() {
   new_state = s_almost_dead_1;
   if (cx->state == s_req_lookup) {
     new_state = s_almost_dead_0;
-    cx->outgoing.connect_req.cancel(); // TODO
+    cx->outgoing.write_req.cancel();
+    cx->outgoing.addrinfo_req.cancel();
+    cx->outgoing.connect_req.cancel();
   }
 
   cx->incoming.close();
@@ -693,6 +696,7 @@ void conn::close() {
   c->rdstate = c_dead;
   c->wrstate = c_dead;
 
-  c->tcp.close([c] { c->client->do_next(); });
-  c->timer_handle.close([c] { c->client->do_next(); });
+  auto f = [c] { c->client->do_next(); };
+  c->tcp.close(f);
+  c->timer_handle.close(f);
 }
