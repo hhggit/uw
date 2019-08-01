@@ -216,12 +216,12 @@ namespace decay_fp_impl {
 
 template <class F>
 using to_fp_t =
-typename std::add_pointer<boost::callable_traits::function_type_t<F>>::type;
+    typename std::add_pointer<boost::callable_traits::function_type_t<F>>::type;
 
 template <class F>
 using decay_fp =
-typename std::enable_if<std::is_convertible<F, to_fp_t<F>>::value,
-                        to_fp_t<F>>::type;
+    typename std::enable_if<std::is_convertible<F, to_fp_t<F>>::value,
+        to_fp_t<F>>::type;
 
 #else // UW_USE_BOOST
 
@@ -254,9 +254,7 @@ template <class... T>
 using void_t = typename void_t_impl<T...>::type;
 
 template <class F, class E = void>
-struct decay_fp2 {
-  using type = F;
-};
+struct decay_fp2 : std::decay<F> {};
 
 template <class F>
 struct decay_fp2<F, void_t<decay_fp<F>>> {
@@ -266,10 +264,14 @@ struct decay_fp2<F, void_t<decay_fp<F>>> {
 #endif // UW_USE_BOOST
 } // namespace decay_fp_impl
 
+template <class T>
+using decay_t = typename std::decay<T>::type;
+
 // decay non-captured lambda and function to function pointer
 #ifdef UW_USE_BOOST
 template <class F>
-using decay_fp = boost::mp11::mp_eval_or<F, decay_fp_impl::decay_fp, F>;
+using decay_fp =
+    boost::mp11::mp_eval_or<decay_t<F>, decay_fp_impl::decay_fp, F>;
 #else
 template <class F>
 using decay_fp = typename decay_fp_impl::decay_fp2<F>::type;
@@ -279,7 +281,11 @@ using deleter_type = void (*)(void*);
 
 template <class F>
 struct pin_callback_impl {
-  static void* ptr(F f) { return new F(std::move(f)); }
+  template <class FF>
+  static void* ptr(FF&& f) {
+    static_assert(std::is_same<F, decay_t<FF>>::value, "");
+    return new F(std::forward<FF>(f));
+  }
   static deleter_type deleter() {
     return [](void* p) { delete reinterpret_cast<F*>(p); };
   }
@@ -299,8 +305,8 @@ using pin_callback = pin_callback_impl<decay_fp<F>>;
 
 struct callback {
   template <class F>
-  explicit callback(F f)
-      : ptr_(pin_callback<F>::ptr(std::move(f))),
+  explicit callback(F&& f)
+      : ptr_(pin_callback<F>::ptr(std::forward<F>(f))),
         deleter_(pin_callback<F>::deleter()) {}
 
   ~callback() {
@@ -357,8 +363,8 @@ struct callback_holder {
   callback_holder& operator=(callback_holder&&) = delete;
 
   template <class F, class Tag = tag<0, Sub>>
-  void make_callback(F f) {
-    get_cb<Tag>() = callback(std::move(f));
+  void make_callback(F&& f) {
+    get_cb<Tag>() = callback(std::forward<F>(f));
   }
 
   template <class F, class Tag = tag<0, Sub>,
@@ -371,7 +377,7 @@ struct callback_holder {
     callback temp(std::move(holder));
     assert(temp.ptr_ && !holder.ptr_);
 
-    (*reinterpret_cast<F*>(temp.ptr_))(std::forward<A>(a)...);
+    (*reinterpret_cast<decay_t<F>*>(temp.ptr_))(std::forward<A>(a)...);
 
     InvokePolicy::call(temp, get_cb<Tag>());
   }
@@ -434,9 +440,9 @@ struct handle : private Handle, protected detail::callback_holder<Sub> {
   void close() { uv_close(raw_handle(), nullptr); }
 
   template <class F>
-  void close(F cb) {
+  void close(F&& cb) {
     using tag = detail::tag<0, handle>;
-    this->template make_callback<F, tag>(std::move(cb));
+    this->template make_callback<F, tag>(std::forward<F>(cb));
     uv_close(raw_handle(), [](uv_handle_t* h) {
       auto self = cast_from_uv<handle*>(h);
       self->template invoke_callback<F, tag>();
@@ -464,8 +470,8 @@ struct req : private Req, protected detail::callback_holder<Sub, true> {
 
 struct shutdown_req : req<shutdown_req, uv_shutdown_t> {
   template <class F>
-  int shutdown(uv_stream_t* stream, F cb) {
-    this->make_callback(std::move(cb));
+  int shutdown(uv_stream_t* stream, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_shutdown(raw(), stream, [](uv_shutdown_t* h, int status) {
       auto self = cast_from_uv<shutdown_req*>(h);
       self->invoke_callback<F>(status);
@@ -476,8 +482,8 @@ struct shutdown_req : req<shutdown_req, uv_shutdown_t> {
 struct write_req : req<write_req, uv_write_t> {
   template <class F>
   int write(
-      uv_stream_t* stream, const uv_buf_t bufs[], unsigned int nbufs, F cb) {
-    this->make_callback(std::move(cb));
+      uv_stream_t* stream, const uv_buf_t bufs[], unsigned int nbufs, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_write(raw(), stream, bufs, nbufs, [](uv_write_t* h, int status) {
       auto self = cast_from_uv<write_req*>(h);
       self->invoke_callback<F>(status);
@@ -485,9 +491,9 @@ struct write_req : req<write_req, uv_write_t> {
   }
   template <class F>
   int write(uv_stream_t* stream, const uv_buf_t bufs[], unsigned int nbufs,
-      uv_stream_t* send_handle, F cb) {
+      uv_stream_t* send_handle, F&& cb) {
     using tag = detail::tag<1, write_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_write2(
         raw(), stream, bufs, nbufs, send_handle, [](uv_write_t* h, int status) {
           auto self = cast_from_uv<write_req*>(h);
@@ -523,9 +529,9 @@ struct stream : handle<Sub, Handle> {
   }
 
   template <class F>
-  int listen(int backlog, F cb) {
+  int listen(int backlog, F&& cb) {
     using tag = detail::tag<1, stream>;
-    this->template make_callback<F, tag>(std::move(cb));
+    this->template make_callback<F, tag>(std::forward<F>(cb));
     return uv_listen(raw_stream(), backlog, [](uv_stream_t* h, int status) {
       auto self = cast_from_uv<stream*>(h);
       self->template invoke_callback<F, tag>(status);
@@ -533,11 +539,11 @@ struct stream : handle<Sub, Handle> {
   }
 
   template <class A, class F>
-  int read_start(A alloc_cb, F read_cb) {
+  int read_start(A&& alloc_cb, F&& read_cb) {
     using tag = detail::tag<0, stream>;
-    this->template make_callback<F, tag>(std::move(read_cb));
+    this->template make_callback<F, tag>(std::forward<F>(read_cb));
     using alloc_tag = detail::tag<2, stream>;
-    this->template make_callback<A, alloc_tag>(std::move(alloc_cb));
+    this->template make_callback<A, alloc_tag>(std::forward<A>(alloc_cb));
     return uv_read_start(
         raw_stream(),
         [](uv_handle_t* h, size_t suggested_size, uv_buf_t* b) {
@@ -551,26 +557,27 @@ struct stream : handle<Sub, Handle> {
   }
 
   template <class F>
-  int shutdown(shutdown_req* req, F cb) {
-    return req->shutdown(raw_stream(), std::move(cb));
+  int shutdown(shutdown_req* req, F&& cb) {
+    return req->shutdown(raw_stream(), std::forward<F>(cb));
   }
 
   template <class F>
-  int write(write_req* req, const uv_buf_t bufs[], unsigned int nbufs, F cb) {
-    return req->write(raw_stream(), bufs, nbufs, std::move(cb));
+  int write(write_req* req, const uv_buf_t bufs[], unsigned int nbufs, F&& cb) {
+    return req->write(raw_stream(), bufs, nbufs, std::forward<F>(cb));
   }
 
   template <class F>
   int write(write_req* req, const uv_buf_t bufs[], unsigned int nbufs,
-      uv_stream_t* send_handle, F cb) {
-    return req->write(raw_stream(), bufs, nbufs, send_handle, std::move(cb));
+      uv_stream_t* send_handle, F&& cb) {
+    return req->write(
+        raw_stream(), bufs, nbufs, send_handle, std::forward<F>(cb));
   }
 };
 
 struct connect_req : req<connect_req, uv_connect_t> {
   template <class F>
-  int connect(uv_tcp_t* tcp, const struct sockaddr* addr, F cb) {
-    this->make_callback(std::move(cb));
+  int connect(uv_tcp_t* tcp, const struct sockaddr* addr, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_tcp_connect(raw(), tcp, addr, [](uv_connect_t* h, int status) {
       auto self = cast_from_uv<connect_req*>(h);
       self->invoke_callback<F>(status);
@@ -578,9 +585,9 @@ struct connect_req : req<connect_req, uv_connect_t> {
   }
 
   template <class F>
-  void connect(uv_pipe_t* pipe, const char* name, F cb) {
+  void connect(uv_pipe_t* pipe, const char* name, F&& cb) {
     using tag = detail::tag<1, connect_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_pipe_connect(raw(), pipe, name, [](uv_connect_t* h, int status) {
       auto self = cast_from_uv<connect_req*>(h);
       self->invoke_callback<F, tag>(status);
@@ -615,16 +622,16 @@ struct tcp : stream<tcp, uv_tcp_t> {
   }
 
   template <class F>
-  int connect(uw::connect_req* req, const struct sockaddr* addr, F cb) {
-    return req->connect(raw(), addr, std::move(cb));
+  int connect(uw::connect_req* req, const struct sockaddr* addr, F&& cb) {
+    return req->connect(raw(), addr, std::forward<F>(cb));
   }
 };
 
 struct udp_send_req : req<udp_send_req, uv_udp_send_t> {
   template <class F>
   int send(uv_udp_t* udp, const uv_buf_t bufs[], unsigned int nbufs,
-      const struct sockaddr* addr, F cb) {
-    this->make_callback(std::move(cb));
+      const struct sockaddr* addr, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_udp_send(
         raw(), udp, bufs, nbufs, addr, [](uv_udp_send_t* h, int status) {
           auto self = cast_from_uv<udp_send_req*>(h);
@@ -682,13 +689,13 @@ struct udp : handle<udp, uv_udp_t> {
 
   template <class F>
   int send(udp_send_req* req, const uv_buf_t bufs[], unsigned int nbufs,
-      const struct sockaddr* addr, F cb) {
-    return req->send(raw(), bufs, nbufs, addr, std::move(cb));
+      const struct sockaddr* addr, F&& cb) {
+    return req->send(raw(), bufs, nbufs, addr, std::forward<F>(cb));
   }
 
   template <class F>
-  int recv_start(uv_alloc_cb alloc_cb, F recv_cb) {
-    this->make_callback(std::move(recv_cb));
+  int recv_start(uv_alloc_cb alloc_cb, F&& recv_cb) {
+    this->make_callback(std::forward<F>(recv_cb));
     return uv_udp_recv_start(raw(), alloc_cb,
         [](uv_udp_t* h, ssize_t nread, const uv_buf_t* buf,
             const struct sockaddr* addr, unsigned flags) {
@@ -725,8 +732,8 @@ struct pipe : stream<pipe, uv_pipe_t> {
   int chmod(int flags) { return uv_pipe_chmod(raw(), flags); }
 
   template <class F>
-  void connect(uw::connect_req* req, const char* name, F cb) {
-    return req->connect(raw(), name, std::move(cb));
+  void connect(uw::connect_req* req, const char* name, F&& cb) {
+    return req->connect(raw(), name, std::forward<F>(cb));
   }
 };
 
@@ -738,8 +745,8 @@ struct poll : handle<poll, uv_poll_t> {
   int stop() { return uv_poll_stop(raw()); }
 
   template <class F>
-  int start(int events, F cb) {
-    this->make_callback(std::move(cb));
+  int start(int events, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_poll_start(
         raw(), events, [](uv_poll_t* h, int status, int events) {
           auto self = cast_from_uv<poll*>(h);
@@ -753,8 +760,8 @@ struct prepare : handle<prepare, uv_prepare_t> {
   int stop() { return uv_prepare_stop(raw()); }
 
   template <class F>
-  int start(F cb) {
-    this->make_callback(std::move(cb));
+  int start(F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_prepare_start(raw(), [](uv_prepare_t* h) {
       auto self = cast_from_uv<prepare*>(h);
       self->invoke_callback<F>();
@@ -767,8 +774,8 @@ struct check : handle<check, uv_check_t> {
   int stop() { return uv_check_stop(raw()); }
 
   template <class F>
-  int start(F cb) {
-    this->make_callback(std::move(cb));
+  int start(F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_check_start(raw(), [](uv_check_t* h) {
       auto self = cast_from_uv<check*>(h);
       self->invoke_callback<F>();
@@ -781,8 +788,8 @@ struct idle : handle<idle, uv_idle_t> {
   int stop() { return uv_idle_stop(raw()); }
 
   template <class F>
-  int start(F cb) {
-    this->make_callback(std::move(cb));
+  int start(F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_idle_start(raw(), [](uv_idle_t* h) {
       auto self = cast_from_uv<idle*>(h);
       self->invoke_callback<F>();
@@ -794,8 +801,8 @@ struct async : handle<async, uv_async_t> {
   int send() { return uv_async_send(raw()); }
 
   template <class F>
-  int init(uv_loop_t* loop, F cb) {
-    this->make_callback(std::move(cb));
+  int init(uv_loop_t* loop, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
     return uv_async_init(loop, raw(), [](uv_async_t* h) {
       auto self = cast_from_uv<async*>(h);
       self->invoke_callback<F>();
@@ -811,9 +818,10 @@ struct timer : handle<timer, uv_timer_t> {
   uint64_t get_repeat() { return uv_timer_get_repeat(raw()); }
 
   template <class F>
-  int start(uint64_t timeout, uint64_t repeat, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_timer_start(raw(),
+  int start(uint64_t timeout, uint64_t repeat, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_timer_start(
+        raw(),
         [](uv_timer_t* h) {
           auto self = cast_from_uv<timer*>(h);
           self->invoke_callback<F>();
@@ -839,9 +847,10 @@ struct getaddrinfo_req : req<getaddrinfo_req, uv_getaddrinfo_t> {
   }
   template <class F>
   int getaddrinfo(uv_loop_t* loop, const char* node, const char* service,
-      const struct addrinfo* hints, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_getaddrinfo(loop, raw(),
+      const struct addrinfo* hints, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_getaddrinfo(
+        loop, raw(),
         [](uv_getaddrinfo_t* h, int status, struct addrinfo* res) {
           auto self = cast_from_uv<getaddrinfo_req*>(h);
           self->invoke_callback<F>(status, addrinfo_ptr(res));
@@ -856,9 +865,10 @@ struct getnameinfo_req : req<getnameinfo_req, uv_getnameinfo_t> {
   }
   template <class F>
   int getnameinfo(
-      uv_loop_t* loop, const struct sockaddr* addr, int flags, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_getnameinfo(loop, raw(),
+      uv_loop_t* loop, const struct sockaddr* addr, int flags, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_getnameinfo(
+        loop, raw(),
         [](uv_getnameinfo_t* h, int status, const char* hostname,
             const char* service) {
           auto self = cast_from_uv<getnameinfo_req*>(h);
@@ -881,11 +891,12 @@ struct process : handle<process, uv_process_t> {
 
 struct work_req : req<work_req, uv_work_t> {
   template <class F, class F2>
-  int queue_work(uv_loop_t* loop, F work_cb, F2 after_work_cb) {
+  int queue_work(uv_loop_t* loop, F&& work_cb, F2&& after_work_cb) {
     using tag2 = detail::tag<1, work_req>;
-    this->make_callback(std::move(work_cb));
-    this->make_callback<F2, tag2>(std::move(after_work_cb));
-    return uv_queue_work(loop, raw(),
+    this->make_callback(std::forward<F>(work_cb));
+    this->make_callback<F2, tag2>(std::forward<F2>(after_work_cb));
+    return uv_queue_work(
+        loop, raw(),
         [](uv_work_t* h) {
           auto self = cast_from_uv<work_req*>(h);
           self->invoke_callback<F>();
@@ -906,18 +917,18 @@ struct fs_req : req<fs_req, uv_fs_t> {
 
   void req_cleanup() { return uv_fs_req_cleanup(raw()); }
   template <class F>
-  int close(uv_loop_t* loop, uv_file file, F cb) {
+  int close(uv_loop_t* loop, uv_file file, F&& cb) {
     using tag = detail::tag<UV_FS_CLOSE, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_close(loop, raw(), [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int open(uv_loop_t* loop, const char* path, int flags, int mode, F cb) {
+  int open(uv_loop_t* loop, const char* path, int flags, int mode, F&& cb) {
     using tag = detail::tag<UV_FS_OPEN, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_open(loop, raw(), path, flags, mode, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -925,18 +936,18 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int read(uv_loop_t* loop, uv_file file, const uv_buf_t bufs[],
-      unsigned int nbufs, int64_t offset, F cb) {
+      unsigned int nbufs, int64_t offset, F&& cb) {
     using tag = detail::tag<UV_FS_READ, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_read(loop, raw(), file, bufs, nbufs, offset, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int unlink(uv_loop_t* loop, const char* path, F cb) {
+  int unlink(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_UNLINK, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_unlink(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -944,9 +955,9 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int write(uv_loop_t* loop, uv_file file, const uv_buf_t bufs[],
-      unsigned int nbufs, int64_t offset, F cb) {
+      unsigned int nbufs, int64_t offset, F&& cb) {
     using tag = detail::tag<UV_FS_WRITE, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_write(loop, raw(), file, bufs, nbufs, offset, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -955,45 +966,45 @@ struct fs_req : req<fs_req, uv_fs_t> {
 
   template <class F>
   int copyfile(uv_loop_t* loop, const char* path, const char* new_path,
-      int flags, F cb) {
+      int flags, F&& cb) {
     using tag = detail::tag<UV_FS_COPYFILE, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_copyfile(loop, raw(), path, new_path, flags, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int mkdir(uv_loop_t* loop, const char* path, int mode, F cb) {
+  int mkdir(uv_loop_t* loop, const char* path, int mode, F&& cb) {
     using tag = detail::tag<UV_FS_MKDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_mkdir(loop, raw(), path, mode, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int mkdtemp(uv_loop_t* loop, const char* tpl, F cb) {
+  int mkdtemp(uv_loop_t* loop, const char* tpl, F&& cb) {
     using tag = detail::tag<UV_FS_MKDTEMP, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_mkdtemp(loop, raw(), tpl, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int rmdir(uv_loop_t* loop, const char* path, F cb) {
+  int rmdir(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_RMDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_rmdir(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int scandir(uv_loop_t* loop, const char* path, int flags, F cb) {
+  int scandir(uv_loop_t* loop, const char* path, int flags, F&& cb) {
     using tag = detail::tag<UV_FS_SCANDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_scandir(loop, raw(), path, flags, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1001,81 +1012,81 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   int scandir_next(uv_dirent_t* ent) { return uv_fs_scandir_next(raw(), ent); }
   template <class F>
-  int opendir(uv_loop_t* loop, const char* path, F cb) {
+  int opendir(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_OPENDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_opendir(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int readdir(uv_loop_t* loop, uv_dir_t* dir, F cb) {
+  int readdir(uv_loop_t* loop, uv_dir_t* dir, F&& cb) {
     using tag = detail::tag<UV_FS_READDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_readdir(loop, raw(), dir, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int closedir(uv_loop_t* loop, uv_dir_t* dir, F cb) {
+  int closedir(uv_loop_t* loop, uv_dir_t* dir, F&& cb) {
     using tag = detail::tag<UV_FS_CLOSEDIR, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_closedir(loop, raw(), dir, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int stat(uv_loop_t* loop, const char* path, F cb) {
+  int stat(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_STAT, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_stat(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int fstat(uv_loop_t* loop, uv_file file, F cb) {
+  int fstat(uv_loop_t* loop, uv_file file, F&& cb) {
     using tag = detail::tag<UV_FS_FSTAT, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_fstat(loop, raw(), file, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int rename(uv_loop_t* loop, const char* path, const char* new_path, F cb) {
+  int rename(uv_loop_t* loop, const char* path, const char* new_path, F&& cb) {
     using tag = detail::tag<UV_FS_RENAME, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_rename(loop, raw(), path, new_path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int fsync(uv_loop_t* loop, uv_file file, F cb) {
+  int fsync(uv_loop_t* loop, uv_file file, F&& cb) {
     using tag = detail::tag<UV_FS_FSYNC, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_fsync(loop, raw(), file, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int fdatasync(uv_loop_t* loop, uv_file file, F cb) {
+  int fdatasync(uv_loop_t* loop, uv_file file, F&& cb) {
     using tag = detail::tag<UV_FS_FDATASYNC, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_fdatasync(loop, raw(), file, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int ftruncate(uv_loop_t* loop, uv_file file, int64_t offset, F cb) {
+  int ftruncate(uv_loop_t* loop, uv_file file, int64_t offset, F&& cb) {
     using tag = detail::tag<UV_FS_FTRUNCATE, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_ftruncate(loop, raw(), file, offset, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1083,9 +1094,9 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int sendfile(uv_loop_t* loop, uv_file out_fd, uv_file in_fd,
-      int64_t in_offset, size_t length, F cb) {
+      int64_t in_offset, size_t length, F&& cb) {
     using tag = detail::tag<UV_FS_SENDFILE, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_sendfile(
         loop, raw(), out_fd, in_fd, in_offset, length, [](uv_fs_t* h) {
           auto self = cast_from_uv<fs_req*>(h);
@@ -1093,18 +1104,18 @@ struct fs_req : req<fs_req, uv_fs_t> {
         });
   }
   template <class F>
-  int access(uv_loop_t* loop, const char* path, int mode, F cb) {
+  int access(uv_loop_t* loop, const char* path, int mode, F&& cb) {
     using tag = detail::tag<UV_FS_ACCESS, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_access(loop, raw(), path, mode, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int chmod(uv_loop_t* loop, const char* path, int mode, F cb) {
+  int chmod(uv_loop_t* loop, const char* path, int mode, F&& cb) {
     using tag = detail::tag<UV_FS_CHMOD, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_template(loop, raw(), path, mode, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1112,36 +1123,37 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int utime(
-      uv_loop_t* loop, const char* path, double atime, double mtime, F cb) {
+      uv_loop_t* loop, const char* path, double atime, double mtime, F&& cb) {
     using tag = detail::tag<UV_FS_UTIME, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_utime(loop, raw(), path, atime, mtime, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int futime(uv_loop_t* loop, uv_file file, double atime, double mtime, F cb) {
+  int futime(
+      uv_loop_t* loop, uv_file file, double atime, double mtime, F&& cb) {
     using tag = detail::tag<UV_FS_FUTIME, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_futime(loop, raw(), file, atime, mtime, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int lstat(uv_loop_t* loop, const char* path, F cb) {
+  int lstat(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_LSTAT, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_lstat(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int link(uv_loop_t* loop, const char* path, const char* new_path, F cb) {
+  int link(uv_loop_t* loop, const char* path, const char* new_path, F&& cb) {
     using tag = detail::tag<UV_FS_LINK, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_link(loop, raw(), path, new_path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1150,36 +1162,36 @@ struct fs_req : req<fs_req, uv_fs_t> {
 
   template <class F>
   int symlink(uv_loop_t* loop, const char* path, const char* new_path,
-      int flags, F cb) {
+      int flags, F&& cb) {
     using tag = detail::tag<UV_FS_SYMLINK, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_symlink(loop, raw(), path, new_path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int readlink(uv_loop_t* loop, const char* path, F cb) {
+  int readlink(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_READLINK, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_readlink(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int realpath(uv_loop_t* loop, const char* path, F cb) {
+  int realpath(uv_loop_t* loop, const char* path, F&& cb) {
     using tag = detail::tag<UV_FS_REALPATH, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_realpath(loop, raw(), path, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int fchmod(uv_loop_t* loop, uv_file file, int mode, F cb) {
+  int fchmod(uv_loop_t* loop, uv_file file, int mode, F&& cb) {
     using tag = detail::tag<UV_FS_FCHMOD, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_fchmod(loop, raw(), file, mode, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1187,18 +1199,19 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int chown(
-      uv_loop_t* loop, const char* path, uv_uid_t uid, uv_gid_t gid, F cb) {
+      uv_loop_t* loop, const char* path, uv_uid_t uid, uv_gid_t gid, F&& cb) {
     using tag = detail::tag<UV_FS_CHOWN, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_chown(loop, raw(), path, uid, gid, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
     });
   }
   template <class F>
-  int fchown(uv_loop_t* loop, uv_file file, uv_uid_t uid, uv_gid_t gid, F cb) {
+  int fchown(
+      uv_loop_t* loop, uv_file file, uv_uid_t uid, uv_gid_t gid, F&& cb) {
     using tag = detail::tag<UV_FS_FCHOWN, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_fchown(loop, raw(), file, uid, gid, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1206,9 +1219,9 @@ struct fs_req : req<fs_req, uv_fs_t> {
   }
   template <class F>
   int lchown(
-      uv_loop_t* loop, const char* path, uv_uid_t uid, uv_gid_t gid, F cb) {
+      uv_loop_t* loop, const char* path, uv_uid_t uid, uv_gid_t gid, F&& cb) {
     using tag = detail::tag<UV_FS_LCHOWN, fs_req>;
-    this->make_callback<F, tag>(std::move(cb));
+    this->make_callback<F, tag>(std::forward<F>(cb));
     return uv_fs_lchown(loop, raw(), path, uid, gid, [](uv_fs_t* h) {
       auto self = cast_from_uv<fs_req*>(h);
       self->invoke_callback<F, tag>();
@@ -1322,9 +1335,10 @@ struct fs_poll : handle<fs_poll, uv_fs_poll_t> {
   }
 
   template <class F>
-  int start(const char* path, unsigned int interval, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_fs_poll_start(raw(),
+  int start(const char* path, unsigned int interval, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_fs_poll_start(
+        raw(),
         [](uv_fs_poll_t* h, int status, const uv_stat_t* prev,
             const uv_stat_t* curr) {
           auto self = cast_from_uv<fs_poll*>(h);
@@ -1342,9 +1356,10 @@ struct fs_event : handle<fs_event, uv_fs_event_t> {
   }
 
   template <class F>
-  int start(const char* path, unsigned int flags, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_fs_event_start(raw(),
+  int start(const char* path, unsigned int flags, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_fs_event_start(
+        raw(),
         [](uv_fs_event_t* h, int status, const uv_stat_t* prev,
             const uv_stat_t* curr) {
           auto self = cast_from_uv<fs_event*>(h);
@@ -1359,9 +1374,10 @@ struct signal : handle<signal, uv_signal_t> {
   int stop() { return uv_signal_stop(raw()); }
 
   template <class F>
-  int start(int signum, F cb) {
-    this->make_callback(std::move(cb));
-    return uv_signal_start(raw(),
+  int start(int signum, F&& cb) {
+    this->make_callback(std::forward<F>(cb));
+    return uv_signal_start(
+        raw(),
         [](uv_signal_t* h, int signum) {
           auto self = cast_from_uv<signal*>(h);
           self->invoke_callback<F>(signum);
@@ -1370,10 +1386,11 @@ struct signal : handle<signal, uv_signal_t> {
   }
 
   template <class F>
-  int start_oneshot(int signum, F cb) {
+  int start_oneshot(int signum, F&& cb) {
     using tag = detail::tag<1, signal>;
-    this->make_callback<F, tag>(std::move(cb));
-    return uv_signal_start_oneshot(raw(),
+    this->make_callback<F, tag>(std::forward<F>(cb));
+    return uv_signal_start_oneshot(
+        raw(),
         [](uv_signal_t* h, int signum) {
           auto self = cast_from_uv<signal*>(h);
           self->invoke_callback<F, tag, detail::reset_if<true>>(signum);
